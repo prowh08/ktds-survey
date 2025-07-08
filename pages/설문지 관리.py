@@ -19,9 +19,8 @@ st.markdown("""
         text-overflow: ellipsis;
         width: 100%;
     }
-    [data-testid="stSidebarNav"] ul li a[href*="Form"] {
-        display: none;
-    }
+    [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
+    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,9 +40,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 st.markdown("---")
-
-if st.button("🔄 목록 새로고침"):
-    st.rerun()
 
 survey_df = get_surveys()
 

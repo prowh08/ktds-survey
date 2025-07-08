@@ -10,6 +10,7 @@ st.markdown("""
 <style>
     .stTextArea, .stTextInput { width: 100%; }
     [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
+    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
