@@ -143,7 +143,6 @@ with edit_col:
     with st.container(height=1500, border=True):
         st.text_input("설문 제목", key="edit_title")
         st.text_area("설문 설명", key="edit_desc")
-        st.checkbox("미리보기 한 장씩 보기", key="is_paginated", on_change=reset_page_on_toggle)
         st.markdown("---"); st.subheader("설문 문항 편집")
 
         for i in range(len(st.session_state.edit_questions)):

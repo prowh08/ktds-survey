@@ -189,7 +189,6 @@ with edit_col:
         if st.session_state.questions:
             st.text_input("설문 제목", key="survey_title", disabled=is_busy)
             st.text_area("설문 설명", key="survey_desc", disabled=is_busy)
-            st.checkbox("한 장씩 보기", key="is_paginated", on_change=reset_page_on_toggle, disabled=is_busy)
             st.markdown("---")
             st.subheader("생성된 설문 문항")
             
