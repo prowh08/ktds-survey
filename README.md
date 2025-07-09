@@ -34,7 +34,7 @@
 | 구분 | 기술 | 주요 역할 |
 | :--- | :--- | :--- |
 | **AI/ML** | `Azure OpenAI Service (GPT-4o-mini)` | 설문 문항 자동 생성, 주관식 답변 요약 및 평가 |
-| | `Azure AI Language (Language Studio)` | 응답 내용 감정 분석, 키워드 추출 |
+| | `Azure AI Language (Language Studio)` `analyze_sentiment` `extract_key_phrases` | 주관식 답변 감정 분석, 주관식 답변 핵심구문 추출 |
 | **Database**| `Azure PostgreSQL Database` | 설문, 응답 데이터 저장 및 관리 |
 | **Frontend** | `Streamlit` | 웹 애플리케이션 UI 및 통계 대시보드 구현 |
 | **ETC** | `Azure WebApp`,`BlobStorage`  | 웹 앱 빌드 및 배포 관리, 스토리지 |
