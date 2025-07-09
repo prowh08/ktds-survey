@@ -2,7 +2,7 @@ import streamlit as st
 import time
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-import pandas as pd
+import openai
 from openai import AzureOpenAI
 import os
 from dotenv import load_dotenv
@@ -72,22 +72,48 @@ def initialize_edit_state():
             st.session_state.edit_questions = questions
             st.session_state.current_page = 0
             st.session_state.data_loaded = True
-
         except Exception as e:
             st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
             st.stop()
 
 def refine_question_text(client, original_text):
-    if not client: st.error("AI 클라이언트가 초기화되지 않았습니다."); return original_text
+    if not client:
+        st.error("AI 클라이언트가 초기화되지 않았습니다.")
+        return original_text
+        
     system_prompt = "당신은 설문조사 문항 작성에 특화된 전문 카피라이터입니다. 사용자가 입력한 질문을 응답자가 더 이해하기 쉽고, 명확하며, 중립적인 표현으로 다듬어주세요. 다른 설명 없이, 다듬어진 최종 질문 문구만 출력해야 합니다."
+    
     try:
         response = client.chat.completions.create(
-            model=openai_deployment, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": original_text}],
-            temperature=0.7, max_tokens=200
+            model=openai_deployment,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": original_text}
+            ],
+            temperature=0.7,
+            max_tokens=200
         )
-        return response.choices[0].message.content.strip()
+        choice = response.choices[0]
+
+        if choice.finish_reason == "content_filter":
+            st.error("AI가 생성한 추천 문구가 콘텐츠 정책에 위배되어 차단되었습니다.")
+            return original_text
+        
+        if choice.message.content is None:
+            st.error("AI가 추천 문구를 생성하지 못했습니다.")
+            return original_text
+
+        return choice.message.content.strip()
+
+    except openai.BadRequestError as e:
+        if "content_filter" in str(e.response.json()):
+            st.error("입력하신 문구가 콘텐츠 정책에 위배되어 AI 추천을 받을 수 없습니다.")
+        else:
+            st.error(f"API 요청 오류가 발생했습니다: {e}")
+        return original_text
+    
     except Exception as e:
-        st.error(f"AI 추천 생성 중 오류 발생: {e}")
+        st.error(f"AI 추천 생성 중 알 수 없는 오류가 발생했습니다: {e}")
         return original_text
 
 if 'edit_survey_id' not in st.session_state:
@@ -123,7 +149,14 @@ with edit_col:
         for i in range(len(st.session_state.edit_questions)):
             with st.container(border=True):
                 current_question = st.session_state.edit_questions[i]
-                st.markdown(f"**문항 {i+1}**")
+
+                header_cols = st.columns([0.8, 0.2])
+                with header_cols[0]: st.markdown(f"**문항 {i+1}**")
+                with header_cols[1]:
+                    if st.button("문항 삭제", key=f"del_edit_q_{i}", use_container_width=True, type="primary"):
+                        st.session_state.edit_questions.pop(i)
+                        st.rerun()
+
                 title_cols = st.columns([4, 1])
                 with title_cols[0]: current_question['title'] = st.text_input("문항 제목", current_question['title'], key=f"edit_q_title_{i}", label_visibility="collapsed")
                 with title_cols[1]:

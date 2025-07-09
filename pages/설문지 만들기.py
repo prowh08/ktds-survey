@@ -40,6 +40,14 @@ system_message = {
         """
     }
 
+st.markdown("""
+<style>
+    .stTextArea, .stTextInput { width: 100%; }
+    [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
+    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
+
 def create_user_prompt(keyword):
     return {
         "role": "user",
@@ -98,13 +106,15 @@ def create_user_prompt(keyword):
             """
     }
 
-st.markdown("""
-<style>
-    .stTextArea, .stTextInput { width: 100%; }
-    [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
-    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
-</style>
-""", unsafe_allow_html=True)
+def cleanup_edit_state():
+    keys_to_clean = [
+        'edit_survey_id', 'data_loaded', 'edit_title', 'edit_desc', 
+        'edit_questions', 'is_paginated', 'current_page', 'edit_survey_group_id'
+    ]
+    for key in keys_to_clean:
+        if key in st.session_state:
+            del st.session_state[key]
+
 
 def initialize_state():
     if "questions" not in st.session_state:
@@ -155,6 +165,8 @@ def initialize_state():
         
         del st.session_state['edit_survey_id']
 
+cleanup_edit_state()
+
 initialize_state()
 
 is_busy = st.session_state.generating or st.session_state.saving
@@ -195,46 +207,25 @@ with edit_col:
         if st.session_state.generating:
             with st.spinner("AI가 설문 초안을 생성 중입니다... 잠시만 기다려주세요."):
                 try:
-                    prompt_messages = [
-                        system_message,
-                        create_user_prompt(survey_topic)
-                    ]
-
+                    prompt_messages = [system_message, create_user_prompt(survey_topic)]
                     response = client.chat.completions.create(
                         model=openai_deployment,
-                        temperature=0.9,
-                        max_tokens=500,
-                        messages=prompt_messages
+                        temperature=0.9, max_tokens=500, messages=prompt_messages
                     )
-
                     if response.choices:
                         choice = response.choices[0]
-
                         if choice.finish_reason == "content_filter":
                             st.error("🚨 AI가 생성한 답변이 콘텐츠 정책에 위배되어 차단되었습니다.")
                         elif choice.message.content is None:
-                            st.error("AI가 답변을 생성하지 못했습니다. 키워드를 좀 더 구체적으로 작성하거나, 잠시 후 다시 시도해 주세요.")
+                            st.error("AI가 답변을 생성하지 못했습니다.")
                         else:
                             survey_data = json.loads(choice.message.content)
                             st.session_state.survey_title = survey_data['survey_title']
                             st.session_state.survey_desc = survey_data['survey_desc']
                             st.session_state.questions = survey_data['questions']
                             st.session_state.current_page = 0
-                    else:
-                        st.error("AI로부터 유효한 응답을 받지 못했습니다.")
-
-                except openai.BadRequestError as e:
-                    if "content_filter" in str(e.response.json()):
-                        st.error("🚨 입력하신 키워드가 Azure OpenAI의 콘텐츠 정책에 위배되어 설문을 생성할 수 없습니다. 안전한 키워드를 입력해주세요.")
-                    else:
-                        st.error(f"API 요청에 오류가 발생했습니다: {e}")
-
-                except openai.AuthenticationError as e:
-                    st.error("API 키 또는 엔드포인트가 잘못되었습니다. 설정을 확인해주세요.")
-
-                except Exception as e:
-                    st.error(f"알 수 없는 오류가 발생했습니다: {e}")
-
+                    else: st.error("AI로부터 유효한 응답을 받지 못했습니다.")
+                except Exception as e: st.error(f"알 수 없는 오류가 발생했습니다: {e}")
                 finally:
                     st.session_state.generating = False
                     st.rerun()
@@ -246,21 +237,24 @@ with edit_col:
             st.markdown("---")
             st.subheader("생성된 설문 문항")
             
-            
             for i in range(len(st.session_state.questions)):
                 with st.container(border=True):
                     current_question = st.session_state.questions[i]
+                    
+                    header_cols = st.columns([0.8, 0.2])
+                    with header_cols[0]: st.markdown(f"**문항 {i+1}**")
+                    with header_cols[1]:
+                        if st.button("문항 삭제", key=f"del_q_{i}", use_container_width=True, type="primary"):
+                            st.session_state.questions.pop(i)
+                            st.rerun()
 
-                    cols = st.columns([5, 2])
-                    current_question['title'] = cols[0].text_input("문항 제목", current_question['title'], key=f"q_title_{i}", disabled=is_busy)
+                    current_question['title'] = st.text_input("문항 제목", current_question['title'], key=f"q_title_{i}", disabled=is_busy, label_visibility="collapsed")
                     
                     old_type = current_question['type']
-                    selected_type = cols[1].selectbox(
-                        "입력 방식", 
-                        ["라디오버튼", "체크박스", "인풋박스"],
+                    selected_type = st.selectbox(
+                        "입력 방식", ["라디오버튼", "체크박스", "인풋박스"],
                         index=["라디오버튼", "체크박스", "인풋박스"].index(old_type),
-                        key=f"q_type_{i}", 
-                        disabled=is_busy
+                        key=f"q_type_{i}", disabled=is_busy
                     )
                     
                     if selected_type != old_type:
@@ -272,11 +266,8 @@ with edit_col:
                         for j in range(len(current_question['options'])):
                             opt_cols = st.columns([10, 1])
                             current_question['options'][j] = opt_cols[0].text_input(
-                                f"옵션 {j+1}", 
-                                value=current_question['options'][j], 
-                                key=f"opt_{i}_{j}", 
-                                label_visibility="collapsed", 
-                                disabled=is_busy
+                                f"옵션 {j+1}", value=current_question['options'][j], 
+                                key=f"opt_{i}_{j}", label_visibility="collapsed", disabled=is_busy
                             )
                             if opt_cols[1].button("✖️", key=f"del_opt_{i}_{j}", use_container_width=True, disabled=is_busy):
                                 current_question['options'].pop(j)
@@ -300,25 +291,16 @@ with preview_col:
             st.markdown(f"<h3 style='text-align: center;'>{st.session_state.survey_title}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='text-align: center;'>{st.session_state.survey_desc}</p>", unsafe_allow_html=True)
             st.markdown("---")
-
             questions_to_show = [st.session_state.questions[st.session_state.current_page]] if st.session_state.is_paginated else st.session_state.questions
-
             for i, q in enumerate(questions_to_show):
                 q_idx = st.session_state.current_page if st.session_state.is_paginated else i
                 st.markdown(f"**Q{q_idx + 1}. {q['title']}**")
-
-                if q['type'] in ["라디오버튼", "체크박스"] and not q['options']:
-                    st.warning("옵션을 추가해주세요.")
-
-                if q['type'] == "라디오버튼":
-                    st.radio("응답", q['options'], key=f"p_r_{q_idx}", disabled=True, label_visibility="collapsed")
+                if q['type'] in ["라디오버튼", "체크박스"] and not q['options']: st.warning("옵션을 추가해주세요.")
+                if q['type'] == "라디오버튼": st.radio("응답", q['options'], key=f"p_r_{q_idx}", disabled=True, label_visibility="collapsed")
                 elif q['type'] == "체크박스":
-                    for k, opt in enumerate(q['options']):
-                        st.checkbox(opt, key=f"p_c_{q_idx}_{k}", disabled=True)
-                elif q['type'] == "인풋박스":
-                    st.text_input("응답", key=f"p_i_{q_idx}", disabled=True, label_visibility="collapsed")
+                    for k, opt in enumerate(q['options']): st.checkbox(opt, key=f"p_c_{q_idx}_{k}", disabled=True)
+                elif q['type'] == "인풋박스": st.text_input("응답", key=f"p_i_{q_idx}", disabled=True, label_visibility="collapsed")
                 st.markdown("---")
-
             if st.session_state.is_paginated:
                 c1, c2 = st.columns(2)
                 c1.button("이전", on_click=go_to_prev_page, use_container_width=True, disabled=(st.session_state.current_page == 0 or is_busy))
@@ -328,11 +310,8 @@ if st.session_state.questions:
     _, center_col, _ = st.columns([1, 1.5, 1])
     with center_col:
         if st.button("💾 설문지 저장", use_container_width=True, type="primary", disabled=is_busy):
-            if not st.session_state.survey_title:
-                st.error("설문 제목을 입력해주세요.")
-            else:
-                st.session_state.saving = True
-                st.rerun()
+            if not st.session_state.survey_title: st.error("설문 제목을 입력해주세요.")
+            else: st.session_state.saving = True; st.rerun()
 
 if st.session_state.saving:
     with st.spinner("설문지를 저장 중입니다..."):
@@ -340,48 +319,23 @@ if st.session_state.saving:
             with conn.session as s:
                 next_id_q = text("SELECT nextval('surveys_survey_id_seq')")
                 new_survey_id = s.execute(next_id_q).scalar_one()
-
                 insert_survey_q = text("""
                     INSERT INTO surveys (survey_id, survey_group_id, survey_title, survey_content, page, version)
                     VALUES (:id, :gid, :title, :content, :page, 1);
                 """)
-                s.execute(
-                    insert_survey_q,
-                    params=dict(
-                        id=new_survey_id,
-                        gid=new_survey_id,
-                        title=st.session_state.survey_title,
-                        content=st.session_state.survey_desc,
-                        page=st.session_state.is_paginated
-                    )
-                )
-
+                s.execute(insert_survey_q, params=dict(id=new_survey_id, gid=new_survey_id, title=st.session_state.survey_title, content=st.session_state.survey_desc, page=st.session_state.is_paginated))
                 for q_item in st.session_state.questions:
                     item_result = s.execute(
                         text('INSERT INTO survey_items (survey_id, item_title, item_type) VALUES (:sid, :title, :type) RETURNING item_id;'),
                         params=dict(sid=new_survey_id, title=q_item['title'], type=q_item['type'])
                     )
                     item_id = item_result.scalar_one()
-
                     if q_item['type'] in ["라디오버튼", "체크박스"]:
                         for option_content in q_item['options']:
-                            s.execute(
-                                text('INSERT INTO item_options (item_id, option_content) VALUES (:iid, :content);'),
-                                params=dict(iid=item_id, content=option_content)
-                            )
+                            s.execute(text('INSERT INTO item_options (item_id, option_content) VALUES (:iid, :content);'), params=dict(iid=item_id, content=option_content))
                 s.commit()
-
             for key in ['survey_title', 'survey_desc', 'questions', 'is_paginated', 'current_page', 'saving']:
-                if key in st.session_state:
-                    del st.session_state[key]
-
+                if key in st.session_state: del st.session_state[key]
             st.switch_page("pages/설문지 관리.py")
-
-        except SQLAlchemyError as e:
-            st.error(f"데이터베이스 저장 중 오류 발생: {e}")
-            st.session_state.saving = False
-            st.rerun()
-        except Exception as e:
-            st.error(f"알 수 없는 오류 발생: {e}")
-            st.session_state.saving = False
-            st.rerun()
+        except SQLAlchemyError as e: st.error(f"DB 저장 오류: {e}"); st.session_state.saving = False; st.rerun()
+        except Exception as e: st.error(f"알 수 없는 오류: {e}"); st.session_state.saving = False; st.rerun()
