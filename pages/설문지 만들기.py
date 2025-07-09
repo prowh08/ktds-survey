@@ -245,26 +245,45 @@ with edit_col:
             st.checkbox("한 장씩 보기", key="is_paginated", on_change=reset_page_on_toggle, disabled=is_busy)
             st.markdown("---")
             st.subheader("생성된 설문 문항")
-
-            for i, q_item in enumerate(st.session_state.questions):
+            
+            
+            for i in range(len(st.session_state.questions)):
                 with st.container(border=True):
-                    cols = st.columns([5, 2])
-                    q_item['title'] = cols[0].text_input("문항 제목", q_item['title'], key=f"q_title_{i}", disabled=is_busy)
-                    q_item['type'] = cols[1].selectbox("입력 방식", ["라디오버튼", "체크박스", "인풋박스"],
-                                                       index=["라디오버튼", "체크박스", "인풋박스"].index(q_item['type']),
-                                                       key=f"q_type_{i}", disabled=is_busy)
+                    current_question = st.session_state.questions[i]
 
-                    if q_item['type'] in ["라디오버튼", "체크박스"]:
+                    cols = st.columns([5, 2])
+                    current_question['title'] = cols[0].text_input("문항 제목", current_question['title'], key=f"q_title_{i}", disabled=is_busy)
+                    
+                    old_type = current_question['type']
+                    selected_type = cols[1].selectbox(
+                        "입력 방식", 
+                        ["라디오버튼", "체크박스", "인풋박스"],
+                        index=["라디오버튼", "체크박스", "인풋박스"].index(old_type),
+                        key=f"q_type_{i}", 
+                        disabled=is_busy
+                    )
+                    
+                    if selected_type != old_type:
+                        st.session_state.questions[i]['type'] = selected_type
+                        st.rerun()
+
+                    if current_question['type'] in ["라디오버튼", "체크박스"]:
                         st.markdown("###### 🔹 옵션 편집")
-                        for j in range(len(q_item['options'])):
+                        for j in range(len(current_question['options'])):
                             opt_cols = st.columns([10, 1])
-                            q_item['options'][j] = opt_cols[0].text_input(f"옵션 {j+1}", value=q_item['options'][j], key=f"opt_{i}_{j}", label_visibility="collapsed", disabled=is_busy)
+                            current_question['options'][j] = opt_cols[0].text_input(
+                                f"옵션 {j+1}", 
+                                value=current_question['options'][j], 
+                                key=f"opt_{i}_{j}", 
+                                label_visibility="collapsed", 
+                                disabled=is_busy
+                            )
                             if opt_cols[1].button("✖️", key=f"del_opt_{i}_{j}", use_container_width=True, disabled=is_busy):
-                                q_item['options'].pop(j)
+                                current_question['options'].pop(j)
                                 st.rerun()
 
                         if st.button("➕ 옵션 추가", key=f"add_opt_{i}", disabled=is_busy):
-                            q_item['options'].append(f"새 옵션 {len(q_item['options'])+1}")
+                            current_question['options'].append(f"새 옵션 {len(current_question['options'])+1}")
                             st.rerun()
                     st.markdown("")
 
@@ -319,16 +338,28 @@ if st.session_state.saving:
     with st.spinner("설문지를 저장 중입니다..."):
         try:
             with conn.session as s:
-                survey_result = s.execute(
-                    text('INSERT INTO surveys (survey_title, survey_content, page, version) VALUES (:title, :content, :page, 1) RETURNING survey_id;'),
-                    params=dict(title=st.session_state.survey_title, content=st.session_state.survey_desc, page=st.session_state.is_paginated)
+                next_id_q = text("SELECT nextval('surveys_survey_id_seq')")
+                new_survey_id = s.execute(next_id_q).scalar_one()
+
+                insert_survey_q = text("""
+                    INSERT INTO surveys (survey_id, survey_group_id, survey_title, survey_content, page, version)
+                    VALUES (:id, :gid, :title, :content, :page, 1);
+                """)
+                s.execute(
+                    insert_survey_q,
+                    params=dict(
+                        id=new_survey_id,
+                        gid=new_survey_id,
+                        title=st.session_state.survey_title,
+                        content=st.session_state.survey_desc,
+                        page=st.session_state.is_paginated
+                    )
                 )
-                survey_id = survey_result.scalar_one()
 
                 for q_item in st.session_state.questions:
                     item_result = s.execute(
                         text('INSERT INTO survey_items (survey_id, item_title, item_type) VALUES (:sid, :title, :type) RETURNING item_id;'),
-                        params=dict(sid=survey_id, title=q_item['title'], type=q_item['type'])
+                        params=dict(sid=new_survey_id, title=q_item['title'], type=q_item['type'])
                     )
                     item_id = item_result.scalar_one()
 

@@ -19,7 +19,6 @@ db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 conn = st.connection("postgres", type="sql", url=db_uri)
 
-
 # Get environment variables
 language_endpoint = os.getenv("AZURE_LNG_ENDPOINT")
 language_api_key = os.getenv("AZURE_LNG_API_KEY")

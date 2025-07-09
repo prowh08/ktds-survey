@@ -18,6 +18,9 @@ db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 conn = st.connection("postgres", type="sql", url=db_uri)
 
+if "confirming_delete" not in st.session_state:
+    st.session_state.confirming_delete = None
+
 st.markdown("""
 <style>
     div[data-testid="column"] { display: flex; align-items: center; height: 55px; }
@@ -128,35 +131,48 @@ if not survey_df.empty:
 
     for index, row in survey_df.iterrows():
         survey_id = row['survey_id']
+        survey_group_id = row['survey_group_id'] # group_id를 변수로 가져옵니다.
         is_paginated = row.get('page', False)
         
         with st.container(border=True):
-            col1, col2, col3, col4, col5, col6 = st.columns([1, 4, 5, 2, 2, 2])
-            with col1:
+            cols = st.columns([1, 4, 5, 2, 2, 2])
+            with cols[0]:
                 st.markdown(f"**v{row['version']}**")
-            with col2:
+            with cols[1]:
                 st.markdown(f'<div class="truncate">{row["survey_title"]}</div>', unsafe_allow_html=True)
-            with col3:
+            with cols[2]:
                 st.markdown(f'<div class="truncate">{row["survey_content"]}</div>', unsafe_allow_html=True)
-
-            with col4:
+            with cols[3]:
                 if st.button("보기", key=f"preview_{survey_id}", use_container_width=True):
                     show_preview_dialog(survey_id, is_paginated)
-            with col5:
+            with cols[4]:
                 if st.button("수정", key=f"edit_{survey_id}", use_container_width=True):
                     st.session_state['edit_survey_id'] = survey_id
                     st.switch_page("pages/_1_Form.py")
-            with col6:
-                if st.button("삭제", key=f"delete_{survey_id}", use_container_width=True, type="primary"):
-                    st.warning(f"v{row['version']}과 관련된 모든 발송 및 응답 기록이 삭제됩니다. 정말 삭제하시겠습니까?")
-                    if st.button("예, 삭제합니다", key=f"confirm_delete_{survey_id}"):
-                        try:
-                            with conn.session as s:
-                                s.execute(text('DELETE FROM surveys WHERE survey_id = :id;'), params=dict(id=survey_id))
-                                s.commit()
-                            st.success(f"설문 (ID: {survey_id})이(가) 성공적으로 삭제되었습니다.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"삭제 중 오류가 발생했습니다: {e}")
+            with cols[5]:
+                if st.button("삭제", key=f"delete_{survey_group_id}", use_container_width=True, type="primary"):
+                    st.session_state.confirming_delete = survey_group_id
+        
+        # 삭제 확인 UI는 루프 바깥에 위치합니다.
+        if st.session_state.confirming_delete == survey_group_id:
+            st.warning(f"설문 '{row['survey_title']}'의 모든 버전을 삭제합니다. 정말 삭제하시겠습니까?")
+            c1, c2, c3 = st.columns([1.5, 1.5, 3])
+            with c1:
+                if st.button("✔️ 예, 삭제합니다", key=f"confirm_delete_{survey_group_id}", type="primary", use_container_width=True):
+                    try:
+                        with conn.session as s:
+                            # survey_id 대신 survey_group_id로 모든 관련 버전을 삭제합니다.
+                            s.execute(text('DELETE FROM surveys WHERE survey_group_id = :gid;'), params={'gid': survey_group_id})
+                            s.commit()
+                        st.success(f"설문 그룹 (ID: {survey_group_id})이(가) 성공적으로 삭제되었습니다.")
+                        st.session_state.confirming_delete = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"삭제 중 오류가 발생했습니다: {e}")
+                        st.session_state.confirming_delete = None
+            with c2:
+                if st.button("✖️ 아니요", key=f"cancel_delete_{survey_group_id}", use_container_width=True):
+                    st.session_state.confirming_delete = None
+    
 else:
     st.info("현재 등록된 설문지가 없습니다. 새 설문지를 만들어주세요.")

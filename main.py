@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from openai import AzureOpenAI
+from azure.core.credentials import AzureKeyCredential
+from azure.ai.textanalytics import TextAnalyticsClient
 import json
 import os
 from dotenv import load_dotenv
@@ -23,6 +25,14 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_api_version = os.getenv("OPENAI_API_VERSION")
 openai_deployment = os.getenv("GPT_DEPLOYMENT_NAME")
 
+# Get environment variables
+language_endpoint = os.getenv("AZURE_LNG_ENDPOINT")
+language_api_key = os.getenv("AZURE_LNG_API_KEY")
+
+lang_credential = AzureKeyCredential(language_api_key)
+
+text_analytics_client = TextAnalyticsClient(language_endpoint, credential=lang_credential)
+
 db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 conn = st.connection("postgres", type="sql", url=db_uri)
 
@@ -34,34 +44,34 @@ client = AzureOpenAI(
 
 st.markdown("""
 <style>
-    div[data-testid="column"] { display: flex; align-items: center; height: 55px; }
+    div[data-testid="column"] { display: flex; align-items: flex-end; height: 55px; }
     .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
     [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
     [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=10)
 def get_survey_list():
     query = """
         SELECT DISTINCT ON (survey_group_id) survey_group_id, survey_title
         FROM surveys ORDER BY survey_group_id, version DESC;
     """
-    return conn.query(query, ttl=600)
+    return conn.query(query, ttl=10)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=10)
 def get_versions_for_group(_conn, survey_group_id):
     query = text("SELECT version FROM surveys WHERE survey_group_id = :group_id ORDER BY version DESC;")
     df = pd.DataFrame(_conn.execute(query, {"group_id": survey_group_id}).fetchall(), columns=['version'])
     return df['version'].tolist()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=10)
 def get_target_count(_conn, survey_id):
     query = text("SELECT SUM(jsonb_array_length(recipients)) FROM survey_sends WHERE survey_id = :sid;")
     result = _conn.execute(query, {"sid": survey_id}).scalar_one_or_none()
     return result or 0
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=10)
 def get_survey_structure(_conn, survey_id):
     query = text("""
         SELECT si.item_title, array_agg(io.option_content ORDER BY io.option_id) as options
@@ -72,7 +82,7 @@ def get_survey_structure(_conn, survey_id):
     df = pd.DataFrame(_conn.execute(query, {"sid": survey_id}).fetchall(), columns=['item_title', 'options'])
     return df
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=10)
 def get_responses_for_survey(_conn, survey_id):
     query = text("""
         SELECT sr.result_id, sr.completed_at, si.item_title, si.item_type,
@@ -87,7 +97,12 @@ def get_responses_for_survey(_conn, survey_id):
     """)
     long_df = pd.DataFrame(_conn.execute(query, {"sid": survey_id}).fetchall(), columns=['result_id', 'created_at', 'item_title', 'item_type', 'response_content', 'sentiment'])
     if long_df.empty: return pd.DataFrame(), pd.DataFrame()
-    pivot_df = long_df.pivot_table(index=['result_id', 'created_at'], columns='item_title', values='response_content', aggfunc='first').reset_index()
+    pivot_df = long_df.pivot_table(
+        index=['result_id', 'created_at'], 
+        columns='item_title', 
+        values='response_content',
+        aggfunc=lambda x: ', '.join(x.dropna().astype(str))
+    ).reset_index()
     pivot_df = pivot_df.rename(columns=lambda c: '만족도' if '만족도' in c else '개선점' if '개선점' in c or '의견' in c else c)
     return pivot_df, long_df
 
@@ -106,19 +121,12 @@ def get_ai_evaluation(_client, text_responses_df):
         당신의 임무는 주어진 세 가지 정보를 모두 활용하여 포괄적인 분석을 수행하는 것입니다.
 
         1.  먼저, 주어진 모든 피드백을 종합하여, 간결하고 전문적인 한 문단의 종합 평가를 한국어로 생성해 주세요.
-        2.  다음으로, 피드백에서 핵심 주제 또는 토픽을 3~5개 찾아내세요. 각 주제에 대해, 주어진 데이터를 바탕으로 전반적인 감성을 'Positive', 'Negative', 'Neutral' 중 하나로 판단해야 합니다.
 
         출력은 반드시 "summary"와 "insights"라는 두 개의 키를 가진 유효한 JSON 형식이어야 합니다.
-        "insights"의 값은 각 객체가 "theme"과 "sentiment" 키를 갖는 객체들의 리스트여야 합니다.
 
         예시:
         {
         "summary": "사용자들은 전반적으로 새로운 기능에 긍정적인 반응을 보였으나, 일부는 가격 정책에 대해 우려를 표했습니다. 특히 UI/UX의 직관성에 대한 높은 평가가 두드러졌습니다.",
-        "insights": [
-            {"theme": "새로운 기능에 대한 관심", "sentiment": "Positive"},
-            {"theme": "가격 정책", "sentiment": "Negative"},
-            {"theme": "UI/UX 편의성", "sentiment": "Positive"}
-        ]
         }
     """
     response = _client.chat.completions.create(
@@ -133,10 +141,13 @@ def get_ai_evaluation(_client, text_responses_df):
     )
     return json.loads(response.choices[0].message.content)
 
-st.set_page_config(page_title="설문 통계", layout="wide")
-st.title("📊 설문 통계 대시보드")
-st.write("설문별, 기간별 응답 결과를 시각화하여 보여줍니다.")
-st.markdown("---")
+st.markdown("""
+<div style='background:linear-gradient(90deg,#5359ff 0,#6a82fb 100%);padding:24px 0 12px 0;text-align:center;color:white;border-radius:8px;'>
+    <h1 style='margin-bottom:0;'>설문 통계</h1>
+    <div style='font-size:1.2em;'>설문별, 기간별 응답 결과를 시각화하여 보여줍니다.</div>
+</div>
+""", unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True)
 
 survey_list_df = get_survey_list()
 if survey_list_df.empty:
@@ -153,7 +164,7 @@ with filter_cols[1]:
 start_date_default, end_date_default = datetime.now().date() - timedelta(days=30), datetime.now().date()
 with filter_cols[2]: start_date = st.date_input("시작일", value=start_date_default)
 with filter_cols[3]: end_date = st.date_input("종료일", value=end_date_default)
-with filter_cols[4]: st.write("⠀"); search_button = st.button("조회", use_container_width=True, type="primary")
+with filter_cols[4]: search_button = st.button("조회", use_container_width=True, type="primary")
 
 st.markdown("---")
 
@@ -210,15 +221,6 @@ if search_button:
 
                 st.subheader("🤖 AI 종합 평가")
                 st.info(ai_evaluation.get("summary", "AI 평가를 생성하지 못했습니다."))
-                st.subheader("💡 AI 핵심 인사이트")
-                insights = ai_evaluation.get("insights", [])
-                if insights:
-                    insight_cols = st.columns(len(insights))
-                    for i, insight in enumerate(insights):
-                        with insight_cols[i]:
-                            sentiment_emoji = "😃" if insight.get("sentiment") == "Positive" else "😞" if insight.get("sentiment") == "Negative" else "😐"
-                            st.metric(label=f"{sentiment_emoji} {insight.get('theme')}", value=insight.get('sentiment'))
-                else: st.info("분석된 핵심 인사이트가 없습니다.")
                 
                 st.markdown("---")
                 
@@ -229,10 +231,10 @@ if search_button:
                     fig_daily_bar.update_yaxes(rangemode='tozero'); st.plotly_chart(fig_daily_bar, use_container_width=True)
 
                 st.markdown("---")
-
-                st.subheader("💬 주관식 답변 분석")
+                
                 left_col, right_col = st.columns(2)
                 with left_col:
+                    st.subheader("💬 주관식 답변 분석")
                     subjective_questions = df_text_analysis['item_title'].unique()
                     if not subjective_questions.any():
                         st.info("분석할 주관식 답변이 없습니다.")
@@ -255,21 +257,32 @@ if search_button:
                                     with st.expander(f"😐 중립적인 답변 ({len(neutral)}개)"):
                                         for resp in neutral: st.markdown(f"- {resp}")
                 with right_col:
-                    text_data_for_wc = " ".join(df_text_analysis["response_content"].dropna())
-                    if text_data_for_wc:
-                        with st.container(border=True):
-                            st.write("#### ☁️ 주요 키워드 (워드클라우드)")
-                            try:
-                                font_path = "c:/Windows/Fonts/malgun.ttf"
-                                wordcloud = WordCloud(width=800, height=400, background_color='white', font_path=font_path).generate(text_data_for_wc)
-                                fig_wc, ax = plt.subplots(figsize=(10, 5)); ax.imshow(wordcloud, interpolation='bilinear'); ax.axis('off')
-                                st.pyplot(fig_wc)
-                            except Exception: st.warning("워드클라우트 생성에 실패했습니다. 한글 폰트 경로를 확인해주세요.")
-                    else:
-                        with st.container(border=True):
-                            st.write("#### ☁️ 주요 키워드 (워드클라우드)")
-                            st.info("분석할 키워드가 없습니다.")
-
+                    st.subheader("💬 주관식 주요 키워드")
+                    with st.container(border=True):
+                        keyword = df_text_analysis["response_content"].dropna().tolist()
+                        
+                        if keyword:
+                            with st.spinner("답변에서 핵심 키워드를 추출 중입니다..."):
+                                response = text_analytics_client.extract_key_phrases(keyword)
+                                successful_responses = [doc for doc in response if not doc.is_error]
+                                
+                            if successful_responses:
+                                all_key_phrases = [phrase for doc in successful_responses for phrase in doc.key_phrases]
+                                text_data_for_wc = " ".join(all_key_phrases)
+                                try:
+                                    font_path = "fonts/MALGUN.TTF"
+                                    wordcloud = WordCloud(width=800, height=350, background_color='white', font_path=font_path).generate(text_data_for_wc)
+                                    fig_wc, ax = plt.subplots(figsize=(10, 5))
+                                    ax.imshow(wordcloud, interpolation='bilinear')
+                                    ax.axis('off')
+                                    st.pyplot(fig_wc)
+                                except Exception:
+                                    st.warning("워드클라우트 생성에 실패했습니다.")
+                        else:
+                            with st.container(border=True):
+                                st.write("#### ☁️ 주요 키워드 (워드클라우드)")
+                                st.info("분석할 키워드가 없습니다.")
+                    
             with tab_table:                
                 st.subheader(f"📄 '{selected_title}' (v{selected_version}) 전체 응답 데이터")
                 cols = df_responses.columns.tolist()
