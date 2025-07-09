@@ -3,9 +3,22 @@ import time
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import pandas as pd
+import os
+from dotenv import load_dotenv
 
+load_dotenv()  # 환경변수 불러오기
 st.set_page_config(page_title="설문 수정", layout="wide", initial_sidebar_state="collapsed")
-conn = st.connection("postgres", type="sql")
+
+# db connection setup
+db_user = os.getenv("DB_USER")
+db_password = os.getenv("DB_PASSWORD")
+db_host = os.getenv("DB_HOST")
+db_port = os.getenv("DB_PORT")
+db_name = os.getenv("DB_NAME")
+
+db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
+conn = st.connection("postgres", type="sql", url=db_uri)
 
 st.markdown("""
 <style>
@@ -73,9 +86,8 @@ edit_col, preview_col = st.columns([6, 4])
 
 with edit_col:
     st.header("✍️ 설문 수정")
-    st.markdown("---")
 
-    with st.container(height=700, border=True):
+    with st.container(height=1500, border=True):
         st.text_input("설문 제목", key="edit_title")
         st.text_area("설문 설명", key="edit_desc")
         st.checkbox("미리보기 한 장씩 보기", key="is_paginated", on_change=reset_page_on_toggle)
@@ -109,8 +121,7 @@ with edit_col:
             st.rerun()
 
 with preview_col:
-    st.header("👁️ 실시간 미리보기")
-    st.markdown("---")
+    st.header("👁️ 설문지 미리보기")
     with st.container(border=True):
         st.markdown(f"<h3 style='text-align: center;'>{st.session_state.edit_title}</h3>", unsafe_allow_html=True)
         st.markdown(f"<p style='text-align: center;'>{st.session_state.edit_desc}</p>", unsafe_allow_html=True)
