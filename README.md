@@ -2,6 +2,7 @@
 
 ## OpenAI GPT 모델을 활용한 설문조사 자동 생성 및 통계 분석 MVP 프로젝트
 URL : https://user25-webbapp.azurewebsites.net/
+Video : https://drive.google.com/file/d/1NenrZvN9qLb3sAUw0xuvBLPRyZLUn5_X/view?usp=sharing
 
 <br>
 
