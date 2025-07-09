@@ -1,5 +1,3 @@
-# 설문지 관리.py
-
 import streamlit as st
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,7 +31,7 @@ def get_surveys():
     try:
         query = """
             SELECT DISTINCT ON (s.survey_group_id)
-                s.survey_id, s.survey_title, s.survey_content, s.created_at, s.version
+                s.survey_id, s.survey_group_id, s.survey_title, s.survey_content, s.version, s.page, s.created_at
             FROM surveys s
             ORDER BY s.survey_group_id, s.version DESC;
         """
@@ -43,47 +41,69 @@ def get_surveys():
         st.error(f"설문 목록을 불러오는 중 오류가 발생했습니다: {e}")
         return pd.DataFrame()
 
-def create_new_survey_version(survey_id_to_copy_from):
+@st.dialog("설문 미리보기", width="large")
+def show_preview_dialog(sid, is_paginated):
+    if 'preview_page' not in st.session_state:
+        st.session_state.preview_page = 0
+        
+    def next_page():
+        st.session_state.preview_page += 1
+    def prev_page():
+        st.session_state.preview_page -= 1
+
     try:
+        s_info_q = text("SELECT * FROM surveys WHERE survey_id = :id")
+        i_info_q = text("SELECT * FROM survey_items WHERE survey_id = :id ORDER BY item_id ASC")
+        
         with conn.session as s:
-            old_survey_q = text("SELECT * FROM surveys WHERE survey_id = :sid")
-            old_survey = s.execute(old_survey_q, {"sid": survey_id_to_copy_from}).fetchone()
-            if not old_survey:
-                st.error("원본 설문을 찾을 수 없습니다.")
-                return None
+            s_info = s.execute(s_info_q, {"id": sid}).mappings().fetchone()
+            i_info = s.execute(i_info_q, {"id": sid}).mappings().fetchall()
 
-            group_id = old_survey.survey_group_id
-            latest_version_q = text("SELECT MAX(version) FROM surveys WHERE survey_group_id = :gid")
-            latest_version = s.execute(latest_version_q, {"gid": group_id}).scalar_one()
-            new_version = latest_version + 1
+        st.markdown(f"<h3 style='text-align: center;'>{s_info['survey_title']}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; color: grey;'>{s_info['survey_content']}</p>", unsafe_allow_html=True)
+        st.markdown("---")
+
+        questions_to_show = [i_info[st.session_state.preview_page]] if is_paginated else i_info
+        
+        for idx, item_row in enumerate(questions_to_show):
+            q_idx = st.session_state.preview_page if is_paginated else idx
+            item_id = item_row['item_id']
+            st.markdown(f"**Q{q_idx + 1}. {item_row['item_title']}**")
             
-            new_survey_q = text("""
-                INSERT INTO surveys (survey_group_id, version, survey_title, survey_content, page)
-                VALUES (:gid, :ver, :title, :content, :page) RETURNING survey_id;
-            """)
-            new_survey_id = s.execute(new_survey_q, {
-                "gid": group_id, "ver": new_version, "title": old_survey.survey_title,
-                "content": old_survey.survey_content, "page": old_survey.page
-            }).scalar_one()
+            item_type = item_row['item_type']
 
-            old_items_q = text("SELECT item_id, item_title, item_type FROM survey_items WHERE survey_id = :sid ORDER BY item_id")
-            old_items = s.execute(old_items_q, {"sid": survey_id_to_copy_from}).mappings().fetchall()
+            if item_type in ["라디오버튼", "체크박스"]:
+                options_q = text("SELECT option_content FROM item_options WHERE item_id = :iid ORDER BY option_id ASC")
+                with conn.session as s:
+                    options_df = pd.DataFrame(s.execute(options_q, {"iid": item_id}).fetchall(), columns=['option_content'])
+                
+                options_list = [] if options_df.empty else options_df['option_content'].tolist()
 
-            for item in old_items:
-                new_item_q = text("INSERT INTO survey_items (survey_id, item_title, item_type) VALUES (:sid, :title, :type) RETURNING item_id;")
-                new_item_id = s.execute(new_item_q, {"sid": new_survey_id, "title": item['item_title'], "type": item['item_type']}).scalar_one()
-
-                old_options_q = text("SELECT option_content FROM item_options WHERE item_id = :iid ORDER BY option_id")
-                old_options = s.execute(old_options_q, {"iid": item['item_id']}).mappings().fetchall()
-                for option in old_options:
-                    s.execute(text("INSERT INTO item_options (item_id, option_content) VALUES (:iid, :content);"), {"iid": new_item_id, "content": option['option_content']})
+                if not options_list: st.warning("옵션이 없습니다.")
+                
+                if item_type == "라디오버튼": st.radio("응답", options=options_list, key=f"preview_radio_{item_id}", disabled=True, label_visibility="collapsed")
+                elif item_type == "체크박스":
+                    for k, opt in enumerate(options_list): st.checkbox(opt, key=f"preview_check_{item_id}_{k}", disabled=True)
             
-            s.commit()
-            st.toast(f"'{old_survey.survey_title}'의 새 버전(v{new_version})이 생성되었습니다.")
-            return new_survey_id
+            elif item_type == "인풋박스":
+                st.text_input("응답", key=f"preview_input_{item_id}", disabled=True, label_visibility="collapsed")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+
+        if is_paginated and i_info:
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            c1.button("이전", on_click=prev_page, use_container_width=True, disabled=(st.session_state.preview_page == 0))
+            c2.button("다음", on_click=next_page, use_container_width=True, disabled=(st.session_state.preview_page >= len(i_info) - 1))
+
     except Exception as e:
-        st.error(f"새로운 버전을 생성하는 중 오류 발생: {e}")
-        return None
+        st.error(f"미리보기를 불러오는 중 오류가 발생했습니다: {e}")
+    
+    st.markdown("---")
+    if st.button("닫기", use_container_width=True):
+        if 'preview_page' in st.session_state:
+            del st.session_state.preview_page
+        st.rerun()
 
 
 st.markdown("""
@@ -98,17 +118,20 @@ survey_df = get_surveys()
 
 if not survey_df.empty:
     with st.container(border=True):
-        col1, col2, col3, col4, col5 = st.columns([1, 4, 6, 2, 2])
+        col1, col2, col3, col4, col5, col6 = st.columns([1, 4, 5, 2, 2, 2])
         col1.markdown("**버전**")
         col2.markdown("**📝 제목**")
         col3.markdown("**📄 내용**")
         col4.write("")
         col5.write("")
+        col6.write("")
 
     for index, row in survey_df.iterrows():
         survey_id = row['survey_id']
+        is_paginated = row.get('page', False)
+        
         with st.container(border=True):
-            col1, col2, col3, col4, col5 = st.columns([1, 4, 6, 2, 2])
+            col1, col2, col3, col4, col5, col6 = st.columns([1, 4, 5, 2, 2, 2])
             with col1:
                 st.markdown(f"**v{row['version']}**")
             with col2:
@@ -117,14 +140,15 @@ if not survey_df.empty:
                 st.markdown(f'<div class="truncate">{row["survey_content"]}</div>', unsafe_allow_html=True)
 
             with col4:
-                if st.button("수정", key=f"edit_{survey_id}", use_container_width=True):
-                    new_survey_id = create_new_survey_version(survey_id)
-                    if new_survey_id:
-                        st.session_state['edit_survey_id'] = new_survey_id
-                        st.switch_page("pages/_1_Form.py")
+                if st.button("보기", key=f"preview_{survey_id}", use_container_width=True):
+                    show_preview_dialog(survey_id, is_paginated)
             with col5:
+                if st.button("수정", key=f"edit_{survey_id}", use_container_width=True):
+                    st.session_state['edit_survey_id'] = survey_id
+                    st.switch_page("pages/_1_Form.py")
+            with col6:
                 if st.button("삭제", key=f"delete_{survey_id}", use_container_width=True, type="primary"):
-                    st.warning("이 버전과 관련된 모든 발송 및 응답 기록이 삭제됩니다. 정말 삭제하시겠습니까?")
+                    st.warning(f"v{row['version']}과 관련된 모든 발송 및 응답 기록이 삭제됩니다. 정말 삭제하시겠습니까?")
                     if st.button("예, 삭제합니다", key=f"confirm_delete_{survey_id}"):
                         try:
                             with conn.session as s:

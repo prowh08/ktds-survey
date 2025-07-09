@@ -1,5 +1,4 @@
 import streamlit as st
-import time
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from openai import AzureOpenAI

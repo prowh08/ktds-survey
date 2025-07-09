@@ -1,15 +1,14 @@
 import streamlit as st
-import time
 from sqlalchemy import text
+import time
 from sqlalchemy.exc import SQLAlchemyError
-import pandas as pd
+from openai import AzureOpenAI
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # 환경변수 불러오기
+load_dotenv()
 st.set_page_config(page_title="설문 수정", layout="wide", initial_sidebar_state="collapsed")
 
-# db connection setup
 db_user = os.getenv("DB_USER")
 db_password = os.getenv("DB_PASSWORD")
 db_host = os.getenv("DB_HOST")
@@ -19,6 +18,26 @@ db_name = os.getenv("DB_NAME")
 db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 conn = st.connection("postgres", type="sql", url=db_uri)
+
+openai_endpoint = os.getenv("AZURE_ENDPOINT")
+openai_api_key = os.getenv("OPENAI_API_KEY")
+openai_api_version = os.getenv("OPENAI_API_VERSION")
+openai_deployment = os.getenv("GPT_DEPLOYMENT_NAME")
+
+client = AzureOpenAI(
+        api_version=openai_api_version,
+        azure_endpoint=openai_endpoint,
+        api_key=openai_api_key,
+)
+
+system_message = {
+    "role": "system",
+    "content": """
+        "당신은 설문조사 문항 작성에 특화된 전문 카피라이터입니다.
+        사용자가 입력한 질문을 응답자가 더 이해하기 쉽고, 명확하며, 중립적인 표현으로 다듬어주세요.
+        다른 설명 없이, 다듬어진 최종 질문 문구만 출력해야 합니다."
+        """
+    }
 
 st.markdown("""
 <style>
@@ -30,50 +49,78 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def initialize_edit_state():
-    for key in ['edit_title', 'edit_desc', 'edit_questions', 'is_paginated', 'current_page']:
-        if key not in st.session_state:
-            st.session_state[key] = "" if "title" in key or "desc" in key else [] if "questions" in key else False if "paginated" in key else 0
+    if not st.session_state.get('data_loaded', False):
+        survey_id_to_edit = st.session_state.get('edit_survey_id')
+        if survey_id_to_edit is None:
+            return
 
-def load_data_for_edit(survey_id):
-    try:
-        survey_info = conn.query(f"SELECT survey_title, survey_content, page FROM surveys WHERE survey_id={survey_id}", ttl=0).iloc[0]
-        st.session_state.edit_title = survey_info['survey_title']
-        st.session_state.edit_desc = survey_info['survey_content']
-        st.session_state.is_paginated = survey_info['page']
-
-        items_df = conn.query(f"SELECT item_id, item_title, item_type FROM survey_items WHERE survey_id={survey_id}", ttl=0)
-        
-        questions_list = []
-        for _, item_row in items_df.iterrows():
-            q_item = {"title": item_row['item_title'], "type": item_row['item_type'], "options": []}
+        try:
+            with conn.session as s:
+                survey_info = s.execute(text("SELECT survey_title, survey_content, page FROM surveys WHERE survey_id = :id"), {"id": survey_id_to_edit}).mappings().fetchone()
+                
+                items_q = text("""
+                    SELECT si.item_id, si.item_title, si.item_type, array_agg(io.option_content ORDER BY io.option_id) as options
+                    FROM survey_items si
+                    LEFT JOIN item_options io ON si.item_id = io.item_id
+                    WHERE si.survey_id = :sid
+                    GROUP BY si.item_id ORDER BY si.item_id;
+                """)
+                items_data = s.execute(items_q, {"sid": survey_id_to_edit}).mappings().fetchall()
             
-            if q_item['type'] in ["라디오버튼", "체크박스"]:
-                options_df = conn.query(f"SELECT option_content FROM item_options WHERE item_id={item_row['item_id']}", ttl=0)
-                q_item['options'] = options_df['option_content'].tolist()
+            st.session_state.edit_title = survey_info['survey_title']
+            st.session_state.edit_desc = survey_info['survey_content']
+            st.session_state.is_paginated = survey_info['page']
             
-            questions_list.append(q_item)
+            questions = []
+            for item in items_data:
+                questions.append({
+                    "title": item['item_title'],
+                    "type": item['item_type'],
+                    "options": [opt for opt in item['options'] if opt is not None]
+                })
+            st.session_state.edit_questions = questions
+            st.session_state.current_page = 0
+            st.session_state.data_loaded = True
 
-        st.session_state.edit_questions = questions_list
-        st.session_state.current_page = 0
-        st.session_state.data_loaded = True
+        except Exception as e:
+            st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
+            st.stop()
 
-    except Exception as e:
-        st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}"); st.stop()
+def refine_question_text(client, original_text):
+    if not client:
+        st.error("AI 클라이언트가 초기화되지 않았습니다.")
+        return original_text
+    
+    response = client.chat.completions.create(
+            model=openai_deployment,
+            temperature=0.9,
+            max_tokens=500,
+            messages=[
+                system_message,
+                {"role": "user", "content": original_text}
+            ]
+        )
+    return response.choices[0].message.content.strip()
+
 
 if 'edit_survey_id' not in st.session_state:
     st.warning("잘못된 접근입니다. 설문 관리 페이지에서 수정할 항목을 선택해주세요.")
     if st.button("관리 페이지로 돌아가기"): st.switch_page("pages/설문지 관리.py")
     st.stop()
 
-if not st.session_state.get('data_loaded', False):
-    initialize_edit_state()
-    load_data_for_edit(st.session_state.edit_survey_id)
+initialize_edit_state()
 
 def reset_page_on_toggle(): st.session_state.current_page = 0
 def go_to_next_page():
     if st.session_state.current_page < len(st.session_state.edit_questions) - 1: st.session_state.current_page += 1
 def go_to_prev_page():
     if st.session_state.current_page > 0: st.session_state.current_page -= 1
+
+def on_type_change(index):
+    widget_key = f"edit_q_type_{index}"
+    new_type = st.session_state[widget_key]
+    st.session_state.edit_questions[index]['type'] = new_type
+
 
 st.markdown(f"""
 <div style='background:linear-gradient(90deg,#5359ff 0,#6a82fb 100%);padding:24px 0 12px 0;text-align:center;color:white;border-radius:8px;'>
@@ -94,25 +141,51 @@ with edit_col:
         st.markdown("---")
         st.subheader("설문 문항 편집")
 
-        for i, q_item in enumerate(st.session_state.edit_questions):
+        for i in range(len(st.session_state.edit_questions)):
             with st.container(border=True):
-                cols = st.columns([5, 2])
-                q_item['title'] = cols[0].text_input("문항 제목", q_item['title'], key=f"edit_q_title_{i}")
-                q_item['type'] = cols[1].selectbox("입력 방식", ["라디오버튼", "체크박스", "인풋박스"],
-                                                   index=["라디오버튼", "체크박스", "인풋박스"].index(q_item['type']),
-                                                   key=f"edit_q_type_{i}")
+                current_question = st.session_state.edit_questions[i]
+                
+                st.markdown(f"**문항 {i+1}**")
+                title_cols = st.columns([4, 1])
+                with title_cols[0]:
+                    current_question['title'] = st.text_input(
+                        "문항 제목", 
+                        current_question['title'], 
+                        key=f"edit_q_title_{i}", 
+                        label_visibility="collapsed"
+                    )
+                with title_cols[1]:
+                    if st.button("AI 추천", key=f"refine_{i}", use_container_width=True):
+                        with st.spinner("AI가 문구를 다듬고 있습니다..."):
+                           refined_text = refine_question_text(client, current_question['title'])
+                           st.session_state.edit_questions[i]['title'] = refined_text
+                           st.rerun()
 
-                if q_item['type'] in ["라디오버튼", "체크박스"]:
+                st.selectbox(
+                    "입력 방식", 
+                    ["라디오버튼", "체크박스", "인풋박스"],
+                    index=["라디오버튼", "체크박스", "인풋박스"].index(current_question['type']),
+                    key=f"edit_q_type_{i}",
+                    on_change=on_type_change,
+                    args=(i,)
+                )
+
+                if current_question['type'] in ["라디오버튼", "체크박스"]:
                     st.markdown("###### 🔹 옵션 편집")
-                    for j in range(len(q_item['options'])):
+                    for j in range(len(current_question['options'])):
                         opt_cols = st.columns([10, 1])
-                        q_item['options'][j] = opt_cols[0].text_input(f"옵션 {j+1}", value=q_item['options'][j], key=f"edit_opt_{i}_{j}", label_visibility="collapsed")
+                        current_question['options'][j] = opt_cols[0].text_input(
+                            f"옵션 {j+1}", 
+                            value=current_question['options'][j], 
+                            key=f"edit_opt_{i}_{j}", 
+                            label_visibility="collapsed"
+                        )
                         if opt_cols[1].button("✖️", key=f"edit_del_opt_{i}_{j}", use_container_width=True):
-                            q_item['options'].pop(j)
+                            current_question['options'].pop(j)
                             st.rerun()
 
                     if st.button("➕ 옵션 추가", key=f"edit_add_opt_{i}"):
-                        q_item['options'].append(f"새 옵션 {len(q_item['options'])+1}")
+                        current_question['options'].append(f"새 옵션 {len(current_question['options'])+1}")
                         st.rerun()
                 st.markdown("")
 
@@ -158,17 +231,18 @@ def cleanup_state():
 
 with left_col:
     if st.button("🔙 취소하고 돌아가기", use_container_width=True):
-        cleanup_state(); st.switch_page("pages/설문지 관리.py")
+        cleanup_state()
+        st.switch_page("pages/설문지 관리.py")
 
 with center_col:
     if st.button("💾 수정 완료", use_container_width=True, type="primary"):
         try:
             with conn.session as s:
                 survey_id = st.session_state.edit_survey_id
-                s.execute(
-                    text('UPDATE surveys SET survey_title = :title, survey_content = :content, page = :page, edit_at = CURRENT_TIMESTAMP WHERE survey_id = :id;'),
-                    params=dict(title=st.session_state.edit_title, content=st.session_state.edit_desc, page=st.session_state.is_paginated, id=survey_id)
-                )
+                
+                update_survey_q = text('UPDATE surveys SET survey_title = :title, survey_content = :content, page = :page, updated_at = CURRENT_TIMESTAMP WHERE survey_id = :id;')
+                s.execute(update_survey_q, params=dict(title=st.session_state.edit_title, content=st.session_state.edit_desc, page=st.session_state.is_paginated, id=survey_id))
+                
                 s.execute(text('DELETE FROM survey_items WHERE survey_id = :id;'), params=dict(id=survey_id))
 
                 for q_item in st.session_state.edit_questions:
@@ -186,7 +260,9 @@ with center_col:
                 s.commit()
             
             st.success("설문이 성공적으로 수정되었습니다!")
-            cleanup_state(); time.sleep(1); st.switch_page("pages/설문지 관리.py")
+            cleanup_state()
+            time.sleep(1)
+            st.switch_page("pages/설문지 관리.py")
 
         except SQLAlchemyError as e: st.error(f"수정 중 데이터베이스 오류가 발생했습니다: {e}")
         except Exception as e: st.error(f"수정 중 알 수 없는 오류가 발생했습니다: {e}")

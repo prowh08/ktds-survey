@@ -151,7 +151,7 @@ def show_send_edit_dialog():
                         else:
                             send_id = uuid.uuid4()
 
-                        base_url = f"http://localhost:8502/Survey_Response?survey_id={survey_id}"
+                        base_url = f"https://user25-webbapp.azurewebsites.net//Survey_Response?survey_id={survey_id}"
                         recipients_df["설문 URL"] = recipients_df["이메일"].apply(
                             lambda x: f"{base_url}&email={urllib.parse.quote(str(x))}&send_id={send_id}"
                         )
