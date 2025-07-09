@@ -40,14 +40,6 @@ system_message = {
         """
     }
 
-st.markdown("""
-<style>
-    .stTextArea, .stTextInput { width: 100%; }
-    [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
-    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
-</style>
-""", unsafe_allow_html=True)
-
 def create_user_prompt(keyword):
     return {
         "role": "user",
@@ -106,14 +98,13 @@ def create_user_prompt(keyword):
             """
     }
 
-def cleanup_edit_state():
-    keys_to_clean = [
-        'edit_survey_id', 'data_loaded', 'edit_title', 'edit_desc', 
-        'edit_questions', 'is_paginated', 'current_page', 'edit_survey_group_id'
-    ]
-    for key in keys_to_clean:
-        if key in st.session_state:
-            del st.session_state[key]
+st.markdown("""
+<style>
+    .stTextArea, .stTextInput { width: 100%; }
+    [data-testid="stSidebarNav"] ul li a[href*="Form"] { display: none; }
+    [data-testid="stSidebarNav"] ul li a[href*="Survey"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
 
 
 def initialize_state():
@@ -131,41 +122,6 @@ def initialize_state():
         st.session_state.generating = False
     if "saving" not in st.session_state:
         st.session_state.saving = False
-        
-    if 'edit_survey_id' in st.session_state:
-        survey_id_to_edit = st.session_state['edit_survey_id']
-        try:
-            with conn.session as s:
-                survey_info = s.execute(text("SELECT * FROM surveys WHERE survey_id = :id"), {"id": survey_id_to_edit}).mappings().fetchone()
-                
-                items_q = text("""
-                    SELECT si.item_id, si.item_title, si.item_type, array_agg(io.option_content ORDER BY io.option_id) as options
-                    FROM survey_items si
-                    LEFT JOIN item_options io ON si.item_id = io.item_id
-                    WHERE si.survey_id = :sid
-                    GROUP BY si.item_id ORDER BY si.item_id;
-                """)
-                items_data = s.execute(items_q, {"sid": survey_id_to_edit}).mappings().fetchall()
-
-            st.session_state.survey_title = survey_info['survey_title']
-            st.session_state.survey_desc = survey_info['survey_content']
-            st.session_state.is_paginated = survey_info['page']
-            
-            questions = []
-            for item in items_data:
-                questions.append({
-                    "title": item['item_title'],
-                    "type": item['item_type'],
-                    "options": [opt for opt in item['options'] if opt is not None]
-                })
-            st.session_state.questions = questions
-
-        except Exception as e:
-            st.error(f"수정할 설문 정보를 불러오는 중 오류 발생: {e}")
-        
-        del st.session_state['edit_survey_id']
-
-cleanup_edit_state()
 
 initialize_state()
 
